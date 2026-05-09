@@ -72,8 +72,7 @@ app.all('*', async (c) => {
     return c.json({ error: 'Rate limit exceeded' }, 429);
   }
 
-  // Build upstream request
-  const url = new URL(c.req.path + c.req.url.split(c.req.path)[1] ?? '', cfg.upstreamUrl);
+  // Build upstream request (path + query, preserving everything after the path)
   const upstreamHeaders = new Headers(c.req.raw.headers);
   upstreamHeaders.delete('host');
   // Replace the caller's PAT with the upstream's own bearer (if configured) so
@@ -97,8 +96,9 @@ app.all('*', async (c) => {
       method: c.req.method,
       headers: upstreamHeaders,
       body: ['GET', 'HEAD'].includes(c.req.method) ? undefined : c.req.raw.body,
-      // @ts-expect-error — Node fetch supports duplex for streaming
-      duplex: 'half',
+      // Node fetch needs duplex: 'half' to stream a request body. The TS lib
+      // may or may not include it depending on @types/node version, so cast.
+      ...({ duplex: 'half' } as Record<string, unknown>),
     });
   } catch (err) {
     // eslint-disable-next-line no-console
