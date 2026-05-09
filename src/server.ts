@@ -76,6 +76,14 @@ app.all('*', async (c) => {
   const url = new URL(c.req.path + c.req.url.split(c.req.path)[1] ?? '', cfg.upstreamUrl);
   const upstreamHeaders = new Headers(c.req.raw.headers);
   upstreamHeaders.delete('host');
+  // Replace the caller's PAT with the upstream's own bearer (if configured) so
+  // the upstream MCP server's existing auth check passes. Identity for
+  // per-user audit + authz still flows via X-User-* headers below.
+  // Without MCP_UPSTREAM_BEARER set, the original Authorization is passed
+  // through (useful for upstreams that natively trust X-User-* headers).
+  if (cfg.upstreamBearer) {
+    upstreamHeaders.set('Authorization', `Bearer ${cfg.upstreamBearer}`);
+  }
   upstreamHeaders.set('X-User-OID', principal.ownerId);
   upstreamHeaders.set('X-User-Email', principal.ownerEmail);
   upstreamHeaders.set('X-User-Scopes', principal.scopes.join(','));

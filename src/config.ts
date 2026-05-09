@@ -3,6 +3,7 @@ interface Config {
   serverSlug: string;
   requiredScope: string;
   upstreamUrl: string;
+  upstreamBearer?: string;
   keystoneUrl: string;
   keystoneServiceToken: string;
   allowedOrigins: string[];
@@ -48,6 +49,7 @@ export function loadConfig(): Config {
     serverSlug,
     requiredScope: `mcp:${serverSlug}`,
     upstreamUrl: required('MCP_UPSTREAM_URL').replace(/\/$/, ''),
+    upstreamBearer: process.env.MCP_UPSTREAM_BEARER || undefined,
     keystoneUrl: required('KEYSTONE_URL').replace(/\/$/, ''),
     keystoneServiceToken: mockAuth ? '' : required('KEYSTONE_SERVICE_TOKEN'),
     allowedOrigins: (process.env.ALLOWED_ORIGINS ?? '')
