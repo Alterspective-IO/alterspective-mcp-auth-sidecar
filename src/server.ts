@@ -1,5 +1,6 @@
 import { serve } from '@hono/node-server';
 import { Hono } from 'hono';
+import type { Context } from 'hono';
 import { randomUUID } from 'node:crypto';
 import { loadConfig } from './config.js';
 import { IntrospectionClient, authorize } from './auth.js';
@@ -14,8 +15,44 @@ const audit = new AuditEmitter(cfg);
 
 const app = new Hono();
 
+/** Public base URL of this resource, derived from the proxy's forwarded host. */
+function publicBaseUrl(c: Context): string {
+  const host = c.req.header('x-forwarded-host') ?? c.req.header('host') ?? '';
+  const proto = c.req.header('x-forwarded-proto') ?? 'https';
+  return `${proto}://${host}`;
+}
+
 // Health check — never auth-gated
 app.get('/health', (c) => c.json({ ok: true, server: cfg.serverSlug }));
+
+// OAuth 2.1 Protected Resource Metadata (RFC 9728). Served UN-gated so MCP
+// clients (Claude Code/Desktop) can discover that this resource is protected
+// by Keystone and start the browser Authorization-Code + PKCE flow against
+// Keystone directly (Keystone is a full OAuth 2.1 AS: authorization_code +
+// PKCE + dynamic client registration). The 401 below advertises this document
+// via WWW-Authenticate. Both the bare well-known path and the resource-suffixed
+// form (.../oauth-protected-resource/mcp) are handled, per the MCP auth spec.
+function protectedResourceMetadata(c: Context): Response {
+  const base = publicBaseUrl(c);
+  return c.json({
+    resource: `${base}/mcp`,
+    authorization_servers: [cfg.keystoneUrl.replace(/\/$/, '')],
+    scopes_supported: [`mcp:${cfg.serverSlug}`],
+    bearer_methods_supported: ['header'],
+    resource_documentation: 'https://identity.alterspective.com.au',
+  });
+}
+app.get('/.well-known/oauth-protected-resource', protectedResourceMetadata);
+app.get('/.well-known/oauth-protected-resource/*', protectedResourceMetadata);
+
+/** 401 helper that points clients at the resource-metadata document (RFC 9728). */
+function unauthorized(c: Context, message: string): Response {
+  c.header(
+    'WWW-Authenticate',
+    `Bearer resource_metadata="${publicBaseUrl(c)}/.well-known/oauth-protected-resource"`,
+  );
+  return c.json({ error: message }, 401);
+}
 
 // Strip any inbound X-User-* / X-Pat-* headers so callers can't forge identity
 app.use('*', async (c, next) => {
@@ -47,7 +84,7 @@ app.all('*', async (c) => {
 
   const authHeader = c.req.header('authorization');
   if (!authHeader?.toLowerCase().startsWith('bearer ')) {
-    return c.json({ error: 'Missing bearer token' }, 401);
+    return unauthorized(c, 'Missing bearer token');
   }
   const token = authHeader.slice(7).trim();
 
@@ -56,7 +93,11 @@ app.all('*', async (c) => {
     const result = await introspector.introspect(token);
     const decision = authorize(result, cfg);
     if (!decision.ok) {
-      return c.json({ error: decision.failure.message }, decision.failure.status as 401 | 403);
+      const status = decision.failure.status as 401 | 403;
+      if (status === 401) {
+        return unauthorized(c, decision.failure.message);
+      }
+      return c.json({ error: decision.failure.message }, status);
     }
     principal = decision.principal;
   } catch (err) {
